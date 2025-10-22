@@ -61,7 +61,8 @@ jobs:
           chmod +x upload_or_update.sh
 
       - name: Upload reports to Box (overwrite-if-exists)
-        run: |
-          ./upload_or_update.sh reports/pred_vs_actual.png
-          ./upload_or_update.sh reports/equity_curve.png
-          ./upload_or_update.sh reports/metrics.txt
+  run: |
+    ./upload_or_update.sh reports/price_with_trades.png
+    ./upload_or_update.sh reports/equity_curve.png
+    ./upload_or_update.sh reports/trades.csv
+    ./upload_or_update.sh reports/metrics.txt
