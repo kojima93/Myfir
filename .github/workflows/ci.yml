@@ -7,6 +7,9 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    env:
+      BOX_TOKEN: ${{ secrets.BOX_DEVELOPER_TOKEN }}   # ← あなたが登録した名前に合わせる
+      BOX_FOLDER_ID: ${{ secrets.BOX_FOLDER_ID }}
 
     steps:
       - name: Checkout repo
@@ -19,32 +22,50 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install yfinance matplotlib pandas scikit-learn boxsdk
+          python -m pip install -U pip
+          pip install -r requirements.txt || true
+          pip install yfinance matplotlib pandas scikit-learn
 
       - name: Run backtest
         run: python main.py
 
       - name: Install jq
-        run: sudo apt-get install -y jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
+      # 同名があれば上書き／なければ新規アップロード
       - name: Define upload helper
+        shell: bash
         run: |
-          echo '#!/bin/bash' > upload_or_update.sh
-          echo 'FILE_PATH="$1"' >> upload_or_update.sh
-          echo 'FOLDER_ID="347316441372"' >> upload_or_update.sh
-          echo 'FILE_NAME=$(basename "$FILE_PATH")' >> upload_or_update.sh
-          echo 'ACCESS_TOKEN="${{ secrets.BOX_ACCESS_TOKEN }}"' >> upload_or_update.sh
-          echo 'FILE_ID=$(curl -s -X GET "https://api.box.com/2.0/folders/$FOLDER_ID/items?fields=name" -H "Authorization: Bearer $ACCESS_TOKEN" | jq -r --arg NAME "$FILE_NAME" ''.entries[] | select(.name==$NAME) | .id'')' >> upload_or_update.sh
-          echo 'if [ -n "$FILE_ID" ]; then' >> upload_or_update.sh
-          echo '  curl -s -X POST "https://upload.box.com/api/2.0/files/$FILE_ID/content" -H "Authorization: Bearer $ACCESS_TOKEN" -F "file=@$FILE_PATH"' >> upload_or_update.sh
-          echo 'else' >> upload_or_update.sh
-          echo '  curl -s -X POST "https://upload.box.com/api/2.0/files/content" -H "Authorization: Bearer $ACCESS_TOKEN" -F "attributes={\"name\":\"$FILE_NAME\",\"parent\":{\"id\":\"$FOLDER_ID\"}}" -F "file=@$FILE_PATH"' >> upload_or_update.sh
-          echo 'fi' >> upload_or_update.sh
+          cat << 'EOS' > upload_or_update.sh
+          #!/usr/bin/env bash
+          set -euo pipefail
+          FILEPATH="$1"
+          BASENAME="$(basename "$FILEPATH")"
+
+          # フォルダ内のファイル一覧を取得して同名のIDを探す
+          ITEMS_JSON="$(curl -sS -H "Authorization: Bearer ${BOX_TOKEN}" \
+            "https://api.box.com/2.0/folders/${BOX_FOLDER_ID}/items?fields=id,name&limit=1000")"
+          FILE_ID="$(echo "$ITEMS_JSON" | jq -r --arg NAME "$BASENAME" '.entries[] | select(.name == $NAME) | .id' | head -n1 || true)"
+
+          if [[ -n "${FILE_ID}" && "${FILE_ID}" != "null" ]]; then
+            echo "Updating ${BASENAME} (id=${FILE_ID})"
+            curl -fS -X POST "https://upload.box.com/api/2.0/files/${FILE_ID}/content" \
+              -H "Authorization: Bearer ${BOX_TOKEN}" \
+              -F "file=@${FILEPATH}"
+          else
+            echo "Uploading ${BASENAME} to folder ${BOX_FOLDER_ID}"
+            curl -fS "https://upload.box.com/api/2.0/files/content" \
+              -H "Authorization: Bearer ${BOX_TOKEN}" \
+              -F "attributes={\"name\":\"${BASENAME}\",\"parent\":{\"id\":\"${BOX_FOLDER_ID}\"}}" \
+              -F "file=@${FILEPATH}"
+          fi
+          echo "Done: ${BASENAME}"
+          EOS
           chmod +x upload_or_update.sh
 
-      - name: Upload reports to Box
+      - name: Upload reports to Box (overwrite if exists)
         run: |
-          ./upload_or_update.sh reports/pred_vs_actual.png
+          ./upload_or_update.sh reports/price_with_trades.png
           ./upload_or_update.sh reports/equity_curve.png
+          ./upload_or_update.sh reports/trades.csv
           ./upload_or_update.sh reports/metrics.txt
