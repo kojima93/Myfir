@@ -12,10 +12,13 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for headless environment
 import matplotlib.pyplot as plt
+import japanize_matplotlib  # 日本語フォントを自動設定
 
 # ---------- 1) データ取得 ----------
-ticker = "7203.T"          # トヨタ。別銘柄に変えてOK（例: "6758.T"＝ソニー）
+ticker = "9432.T"  # NTT
 period = "3y"               # 3年分
 print(f"[INFO] Downloading {ticker} ({period}) ...")
 df = yf.download(ticker, period=period, auto_adjust=True)  # 株式分割等を調整
@@ -63,12 +66,12 @@ print(f"MAPE: {mape:.2f}%")
 # ---------- 6) 簡易バックテスト（ロング/キャッシュ） ----------
 # ルール：予測値（明日の終値） > 今日の終値 → 翌日ロング（1倍）
 # それ以外 → キャッシュ（0）
-signal = (y_pred > close_test.values).astype(int)
+signal = (y_pred > close_test.values.flatten()).astype(int)
 # 翌日のリターン
-ret_next = df["Close"].pct_change().iloc[split_idx+1:]   # テスト開始翌日から
-sig_for_ret = signal[:-1]                                 # 翌日のリターンに対して今日の判断を適用
-strat_ret = sig_for_ret * ret_next.values
-bh_ret = ret_next.values                                  # 買い持ち
+ret_next = df["Close"].pct_change().iloc[split_idx+1:split_idx+1+len(signal)]
+sig_for_ret = signal[:len(ret_next)]                      # 翌日のリターンに対して今日の判断を適用
+strat_ret = sig_for_ret * ret_next.values.flatten()
+bh_ret = ret_next.values.flatten()                        # 買い持ち
 
 def ann_return(ret, periods=252):
     total = (1 + pd.Series(ret)).prod()
@@ -101,7 +104,7 @@ plt.plot(test_index, y_pred, label="Predicted (t+1)")
 plt.title(f"{ticker} 予測（テスト期間）")
 plt.legend(); plt.grid(); plt.tight_layout()
 plt.savefig("reports/pred_vs_actual.png")
-plt.show()
+plt.close()
 
 # エクイティカーブ
 plt.figure(figsize=(10,5))
@@ -110,7 +113,7 @@ plt.plot(eq_strat.index, eq_strat.values, label="AI Strategy (long/flat)")
 plt.title("Equity Curve (Test slice)")
 plt.legend(); plt.grid(); plt.tight_layout()
 plt.savefig("reports/equity_curve.png")
-plt.show()
+plt.close()
 
 # 指標を書き出し
 with open("reports/metrics.txt", "w", encoding="utf-8") as f:
