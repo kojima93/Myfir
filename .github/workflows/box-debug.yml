@@ -1,0 +1,42 @@
+name: Box Debug
+on: [workflow_dispatch]
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install boxsdk
+
+      # ① JWTでアクセストークンを発行し .box_token に保存（同時に長さも出力）
+      - name: Issue token via JWT
+        env:
+          BOX_CONFIG_JSON: ${{ secrets.BOX_CONFIG_JSON }}  # ← これが必須
+        run: |
+          python - <<'PY'
+          import os,json
+          from boxsdk import JWTAuth, Client
+          cfg=json.loads(os.environ["BOX_CONFIG_JSON"])
+          auth=JWTAuth.from_settings_dictionary(cfg)
+          token=auth.authenticate_instance()
+          # 発行したトークンをファイル保存
+          open(".box_token","w").write(token)
+          # だれとして入れているか（動作確認）
+          me=Client(auth).user().get()
+          print("SDK_OK id=", me.id, " name=", me.name)
+          print("TOKEN_LEN", len(token))
+          PY
+
+      # ② 発行したトークンで /users/me を叩き、HTTPコードを見る
+      - name: Call /users/me
+        run: |
+          TOKEN="$(cat .box_token)"
+          CODE=$(curl -sS -o resp.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            https://api.box.com/2.0/users/me)
+          echo "HTTP=${CODE}"
+          cat resp.json || true
