@@ -8,7 +8,7 @@
 #
 # 必要ライブラリ（requirements.txt）：
 # numpy, pandas, matplotlib, scikit-learn, yfinance
-　
+
 import os, math
 import numpy as np
 import pandas as pd
