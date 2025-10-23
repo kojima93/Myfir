@@ -20,7 +20,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # ========= パラメータ =========
-ticker = "9433.T"      # NTT（必要に応じて変更）
+ticker = "9432.T"      # NTT（必要に応じて変更）
 period = "3y"          # データ期間
 eps = 0.0015           # 予測リターンがこれ以上の時だけ参入（0.15%）
 max_pos = 1.0          # 最大ポジション（1.0 = 全額）
