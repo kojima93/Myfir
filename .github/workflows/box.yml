@@ -1,0 +1,27 @@
+name: Box JWT Auth Test
+on: [workflow_dispatch]  # 手動実行
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install boxsdk==3.9.2
+
+      - name: Get Box token & whoami
+        env:
+          BOX_CONFIG_JSON: ${{ secrets.BOX_CONFIG_JSON }}
+          # BOX_USER_ID: ${{ secrets.BOX_USER_ID }}   # 必要な人だけ
+        run: python .github/scripts/get_box_token.py
+
+      # 例：curlでAPI叩く（任意）
+      - name: Call Box API with curl
+        run: |
+          TOKEN=$(cat .box_token)
+          curl -s -H "Authorization: Bearer $TOKEN" https://api.box.com/2.0/users/me
