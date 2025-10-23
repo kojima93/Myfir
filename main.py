@@ -20,18 +20,22 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # ========= パラメータ =========
-ticker = "9432.T"      # NTT（必要に応じて変更）
-period = "3y"          # データ期間
+ticker = "9432.T"      # ← ここを "7203.T" や "9984.T" などに変更
+period = "3y"          # データ期間（例："3y", "5y", "10y"）
 eps = 0.0015           # 予測リターンがこれ以上の時だけ参入（0.15%）
 max_pos = 1.0          # 最大ポジション（1.0 = 全額）
 alpha = 1.0            # Ridgeの正則化強さ
 train_ratio = 0.7      # 学習/テスト分割（時系列）
 # ============================
 
+# --- 日本株の数値コードが入ってきたら自動で .T を補う（ヒューマンエラー対策） ---
+if ticker.isdigit() and not ticker.endswith(".T"):
+    ticker = ticker + ".T"
+
 print(f"[INFO] Downloading {ticker} ({period}) ...")
 df = yf.download(ticker, period=period, auto_adjust=True)
 if df.empty:
-    raise RuntimeError("yfinanceからデータ取得に失敗しました。銘柄コード/ネットを確認してください。")
+    raise RuntimeError(f"yfinanceからデータ取得に失敗しました: ticker={ticker}, period={period}")
 
 # ---- 特徴量 ----
 def rsi(series, period=14):
@@ -53,14 +57,30 @@ df = df.dropna().copy()
 df["Ret_t+1"] = df["Close"].pct_change().shift(-1)
 df = df.dropna().copy()
 
+# ---- 特徴量セット（学習・推論で共通の順序）----
 features = ["SMA5","SMA25","Mom5","Vol10","RSI14","Ret1"]
 X = df[features].copy()
 y = df["Ret_t+1"].copy()
+
+# ---- 最小データ件数チェック（ローリング窓があるため最低60日程度を推奨）----
+MIN_OBS = 60
+if len(df) < MIN_OBS:
+    raise RuntimeError(
+        f"データ不足: df={len(df)}件。periodを延ばす（例: '5y'）か、"
+        f"指標窓(例: SMA25/RSI14)を短くしてください。"
+    )
 
 # ---- 時系列スプリット ----
 split_idx = int(len(df) * train_ratio)
 X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
 y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+# ---- テスト件数チェック（翌日ずらしで1件使うため最低2件は欲しい）----
+if len(X_test) < 2:
+    raise RuntimeError(
+        f"テストデータ不足: X_test={len(X_test)}件。periodを延ばす（例: '5y'）か、"
+        f"train_ratioを小さくしてテスト期間を確保してください。"
+    )
 
 # 形状安定化（どの環境でも1次元に）
 y_train = y_train.values.ravel()
@@ -99,6 +119,13 @@ ret_next = df["Ret1"].iloc[split_idx+1:].values  # 実際の翌日リターン
 test_idx = df.index[split_idx:]                 # 判定日のindex
 exec_idx = df.index[split_idx+1:]               # 約定日のindex（翌日）
 price_exec = df["Close"].loc[exec_idx].values   # 約定価格（翌日終値）
+
+# ---- 安全チェック：長さ一致 ----
+if len(signal_for_ret) != len(ret_next):
+    raise RuntimeError(
+        f"長さ不一致: signal={len(signal_for_ret)}, ret_next={len(ret_next)}。"
+        f"インデックスの計算を確認してください。"
+    )
 
 # ---- 売買とエクイティ ----
 equity = 1.0
