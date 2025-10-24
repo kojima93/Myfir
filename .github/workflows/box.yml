@@ -1,16 +1,17 @@
-name: Upload reports to Box (CCG)
+name: Upload reports to Box (Client Credentials)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
-  run-and-upload:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -19,81 +20,98 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -U pip
+          pip install yfinance matplotlib pandas scikit-learn
+          pip install PyJWT cryptography
+          sudo apt-get update && sudo apt-get install -y jq curl
 
-      - name: Run backtest
-        run: |
-          python main.py
-          ls -l reports || true
-
-      # ← 毎回ここでアクセストークンを新規発行（Developer Token不要）
+      # ===============================
+      #  Box Client Credentials 認証
+      # ===============================
       - name: Get Box access token (Client Credentials)
         id: box_token
         env:
           BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
           BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
-          BOX_SUBJECT_TYPE: ${{ secrets.BOX_SUBJECT_TYPE }}   # 個人 → "user"
-          BOX_SUBJECT_ID: ${{ secrets.BOX_SUBJECT_ID }}       # あなたのBoxユーザーID（数値）
+          BOX_SUBJECT_TYPE: ${{ secrets.BOX_SUBJECT_TYPE }}   # 例: "user"
+          BOX_SUBJECT_ID: ${{ secrets.BOX_SUBJECT_ID }}       # 自分のBoxユーザーID
         run: |
           set -e
-          RESP=$(curl -sS -X POST https://api.box.com/oauth2/token \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "grant_type=client_credentials" \
-            --data-urlencode "client_id=${BOX_CLIENT_ID}" \
-            --data-urlencode "client_secret=${BOX_CLIENT_SECRET}" \
-            --data-urlencode "box_subject_type=${BOX_SUBJECT_TYPE}" \
-            --data-urlencode "box_subject_id=${BOX_SUBJECT_ID}")
-          echo "$RESP"
-          TOKEN=$(python - << 'PY'
-import sys, json
-resp=json.loads(sys.stdin.read())
-print(resp.get("access_token",""))
-PY
-          <<< "$RESP")
-          if [ -z "$TOKEN" ]; then
-            echo "Failed to obtain Box access token"; exit 1
-          fi
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          cat > get_token.py <<'PY'
+import os, sys, json, subprocess
 
-      - name: Upload reports/price_with_trades.png to Box
-        if: ${{ hashFiles('reports/price_with_trades.png') != '' }}
-        env:
-          TOKEN: ${{ steps.box_token.outputs.token }}
-          FOLDER_ID: ${{ secrets.BOX_FOLDER_ID }}
-          FILE_PATH: reports/price_with_trades.png
+CLIENT_ID = os.environ["BOX_CLIENT_ID"]
+CLIENT_SECRET = os.environ["BOX_CLIENT_SECRET"]
+SUBJECT_TYPE = os.environ["BOX_SUBJECT_TYPE"]
+SUBJECT_ID = os.environ["BOX_SUBJECT_ID"]
+
+# curlでリクエストを実行
+cmd = [
+  "curl", "-sS", "-X", "POST", "https://api.box.com/oauth2/token",
+  "-H", "Content-Type: application/x-www-form-urlencoded",
+  "--data-urlencode", "grant_type=client_credentials",
+  "--data-urlencode", f"client_id={CLIENT_ID}",
+  "--data-urlencode", f"client_secret={CLIENT_SECRET}",
+  "--data-urlencode", f"box_subject_type={SUBJECT_TYPE}",
+  "--data-urlencode", f"box_subject_id={SUBJECT_ID}"
+]
+
+resp = subprocess.check_output(cmd)
+data = json.loads(resp.decode())
+token = data.get("access_token")
+
+if not token:
+    print("Failed to obtain Box access token", file=sys.stderr)
+    print(data)
+    sys.exit(1)
+
+with open(os.environ["GITHUB_ENV"], "a") as f:
+    f.write(f"BOX_TOKEN={token}\n")
+
+print("✅ Box access token retrieved successfully.")
+PY
+          python get_token.py
+
+      # ===============================
+      #  Boxへアップロード（上書き対応）
+      # ===============================
+      - name: Define upload helper
         run: |
-          set -e
-          FILE_NAME=$(basename "$FILE_PATH")
+          cat > upload_or_update.sh <<'EOS'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          FILEPATH="$1"
+          BASENAME="$(basename "$FILEPATH")"
+          FOLDER_ID="${BOX_FOLDER_ID:-0}"
 
-          # 同名ファイルがあるか検索（フォルダ内・名前一致）
-          SEARCH=$(curl -sS -G https://api.box.com/2.0/search \
-            -H "Authorization: Bearer ${TOKEN}" \
-            --data-urlencode "query=${FILE_NAME}" \
-            --data-urlencode "type=file" \
-            --data-urlencode "ancestor_folder_ids=${FOLDER_ID}" \
-            --data-urlencode "content_types=name")
+          echo "Uploading $BASENAME ..."
 
-          FILE_ID=$(python - << 'PY'
-import sys, json, os
-data=json.loads(sys.stdin.read())
-name=os.environ["FILE_NAME"]
-for e in data.get("entries", []):
-    if e.get("name")==name:
-        print(e.get("id",""))
-        break
-PY
-          <<< "$SEARCH")
+          ITEMS_JSON="$(curl -sS -H "Authorization: Bearer ${BOX_TOKEN}" \
+            "https://api.box.com/2.0/folders/${FOLDER_ID}/items?fields=id,name&limit=1000")"
 
-          if [ -z "$FILE_ID" ]; then
-            echo "No existing file. Uploading new..."
-            curl -sS https://upload.box.com/api/2.0/files/content \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -F attributes="{\"name\":\"${FILE_NAME}\",\"parent\":{\"id\":\"${FOLDER_ID}\"}}" \
-              -F file=@"${FILE_PATH}"
+          FILE_ID="$(echo "$ITEMS_JSON" | jq -r --arg NAME "$BASENAME" '.entries[] | select(.name == $NAME) | .id' | head -n1 || true)"
+
+          if [[ -n "${FILE_ID}" && "${FILE_ID}" != "null" ]]; then
+            echo "Updating ${BASENAME} (id=${FILE_ID})"
+            curl -fS -X POST "https://upload.box.com/api/2.0/files/${FILE_ID}/content" \
+              -H "Authorization: Bearer ${BOX_TOKEN}" \
+              -F "file=@${FILEPATH}"
           else
-            echo "File exists (id=$FILE_ID). Uploading new version..."
-            curl -sS -X POST https://upload.box.com/api/2.0/files/${FILE_ID}/content \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -F file=@"${FILE_PATH}"
+            echo "Uploading ${BASENAME} to folder ${FOLDER_ID}"
+            curl -fS "https://upload.box.com/api/2.0/files/content" \
+              -H "Authorization: Bearer ${BOX_TOKEN}" \
+              -F "attributes={\"name\":\"${BASENAME}\",\"parent\":{\"id\":\"${FOLDER_ID}\"}}" \
+              -F "file=@${FILEPATH}"
           fi
+          echo "✅ Done: ${BASENAME}"
+          EOS
+          chmod +x upload_or_update.sh
+
+      - name: Upload reports to Box
+        env:
+          BOX_FOLDER_ID: ${{ secrets.BOX_FOLDER_ID }}
+        run: |
+          ./upload_or_update.sh reports/price_with_trades.png
+          ./upload_or_update.sh reports/equity_curve.png
+          ./upload_or_update.sh reports/trades.csv
+          ./upload_or_update.sh reports/metrics.txt
