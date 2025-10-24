@@ -32,9 +32,8 @@ jobs:
       - name: Run backtest
         run: python main.py
 
-      # ==== ここで JWT を使ってアクセストークン取得 ====
+      # ==== JWT でアクセストークン取得 ====
       - name: Get Box access token via JWT
-        id: box_jwt_token
         env:
           BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
           BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
@@ -44,7 +43,8 @@ jobs:
           BOX_JWT_PASSPHRASE: ${{ secrets.BOX_JWT_PASSPHRASE }}
         run: |
           set -e
-          python - << 'PY'
+          # 1) Pythonスクリプトを書き出す（heredocのYAML崩れを防ぐ）
+          cat > jwt_token.py <<'PY'
 import os, time, uuid, json
 import jwt  # PyJWT
 from urllib import request, parse
@@ -56,7 +56,7 @@ KID = os.environ["BOX_JWT_KID"]
 PRIVATE_KEY = os.environ["BOX_JWT_PRIVATE_KEY"]
 PASSPHRASE = os.environ["BOX_JWT_PASSPHRASE"].encode("utf-8")
 
-# JWT 生成（Enterprise 主体）
+# JWT（Enterprise主体）を作成
 now = int(time.time())
 claims = {
   "iss": CLIENT_ID,
@@ -94,11 +94,12 @@ with request.urlopen(req) as resp:
 if not token:
     raise SystemExit("Failed to obtain Box access token via JWT")
 
+# GitHub環境に書き出す
 with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
     f.write(f"BOX_TOKEN={token}\n")
 PY
-        shell: bash
-      # ============================================
+          # 2) 実行
+          python jwt_token.py
 
       # 同名があれば上書き／なければ新規アップロード
       - name: Define upload helper
@@ -110,6 +111,7 @@ PY
           FILEPATH="$1"
           BASENAME="$(basename "$FILEPATH")"
 
+          # フォルダ内から同名ファイルのIDを取得
           ITEMS_JSON="$(curl -sS -H "Authorization: Bearer ${BOX_TOKEN}" \
             "https://api.box.com/2.0/folders/${BOX_FOLDER_ID}/items?fields=id,name&limit=1000")"
           FILE_ID="$(echo "$ITEMS_JSON" | jq -r --arg NAME "$BASENAME" '.entries[] | select(.name == $NAME) | .id' | head -n1 || true)"
