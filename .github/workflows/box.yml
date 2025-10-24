@@ -1,27 +1,99 @@
-name: Box JWT Auth Test
-on: [workflow_dispatch]  # 手動実行
+name: Upload reports to Box (CCG)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  test:
+  run-and-upload:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install deps
-        run: pip install boxsdk==3.9.2
-
-      - name: Get Box token & whoami
-        env:
-          BOX_CONFIG_JSON: ${{ secrets.BOX_CONFIG_JSON }}
-          # BOX_USER_ID: ${{ secrets.BOX_USER_ID }}   # 必要な人だけ
-        run: python .github/scripts/get_box_token.py
-
-      # 例：curlでAPI叩く（任意）
-      - name: Call Box API with curl
+      - name: Install dependencies
         run: |
-          TOKEN=$(cat .box_token)
-          curl -s -H "Authorization: Bearer $TOKEN" https://api.box.com/2.0/users/me
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run backtest
+        run: |
+          python main.py
+          ls -l reports || true
+
+      # ← 毎回ここでアクセストークンを新規発行（Developer Token不要）
+      - name: Get Box access token (Client Credentials)
+        id: box_token
+        env:
+          BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
+          BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
+          BOX_SUBJECT_TYPE: ${{ secrets.BOX_SUBJECT_TYPE }}   # 個人 → "user"
+          BOX_SUBJECT_ID: ${{ secrets.BOX_SUBJECT_ID }}       # あなたのBoxユーザーID（数値）
+        run: |
+          set -e
+          RESP=$(curl -sS -X POST https://api.box.com/oauth2/token \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=${BOX_CLIENT_ID}" \
+            --data-urlencode "client_secret=${BOX_CLIENT_SECRET}" \
+            --data-urlencode "box_subject_type=${BOX_SUBJECT_TYPE}" \
+            --data-urlencode "box_subject_id=${BOX_SUBJECT_ID}")
+          echo "$RESP"
+          TOKEN=$(python - << 'PY'
+import sys, json
+resp=json.loads(sys.stdin.read())
+print(resp.get("access_token",""))
+PY
+          <<< "$RESP")
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to obtain Box access token"; exit 1
+          fi
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Upload reports/price_with_trades.png to Box
+        if: ${{ hashFiles('reports/price_with_trades.png') != '' }}
+        env:
+          TOKEN: ${{ steps.box_token.outputs.token }}
+          FOLDER_ID: ${{ secrets.BOX_FOLDER_ID }}
+          FILE_PATH: reports/price_with_trades.png
+        run: |
+          set -e
+          FILE_NAME=$(basename "$FILE_PATH")
+
+          # 同名ファイルがあるか検索（フォルダ内・名前一致）
+          SEARCH=$(curl -sS -G https://api.box.com/2.0/search \
+            -H "Authorization: Bearer ${TOKEN}" \
+            --data-urlencode "query=${FILE_NAME}" \
+            --data-urlencode "type=file" \
+            --data-urlencode "ancestor_folder_ids=${FOLDER_ID}" \
+            --data-urlencode "content_types=name")
+
+          FILE_ID=$(python - << 'PY'
+import sys, json, os
+data=json.loads(sys.stdin.read())
+name=os.environ["FILE_NAME"]
+for e in data.get("entries", []):
+    if e.get("name")==name:
+        print(e.get("id",""))
+        break
+PY
+          <<< "$SEARCH")
+
+          if [ -z "$FILE_ID" ]; then
+            echo "No existing file. Uploading new..."
+            curl -sS https://upload.box.com/api/2.0/files/content \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -F attributes="{\"name\":\"${FILE_NAME}\",\"parent\":{\"id\":\"${FOLDER_ID}\"}}" \
+              -F file=@"${FILE_PATH}"
+          else
+            echo "File exists (id=$FILE_ID). Uploading new version..."
+            curl -sS -X POST https://upload.box.com/api/2.0/files/${FILE_ID}/content \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -F file=@"${FILE_PATH}"
+          fi
