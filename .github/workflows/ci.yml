@@ -26,6 +26,7 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt || true
           pip install yfinance matplotlib pandas scikit-learn
+          pip install PyJWT cryptography
           sudo apt-get update && sudo apt-get install -y jq
 
       - name: Run backtest
@@ -46,7 +47,6 @@ jobs:
           python - << 'PY'
 import os, time, uuid, json
 import jwt  # PyJWT
-from base64 import b64decode
 from urllib import request, parse
 
 CLIENT_ID = os.environ["BOX_CLIENT_ID"]
@@ -59,12 +59,12 @@ PASSPHRASE = os.environ["BOX_JWT_PASSPHRASE"].encode("utf-8")
 # JWT 生成（Enterprise 主体）
 now = int(time.time())
 claims = {
-  "iss": CLIENT_ID,                      # client_id
-  "sub": ENTERPRISE_ID,                  # enterprise id
+  "iss": CLIENT_ID,
+  "sub": ENTERPRISE_ID,
   "box_sub_type": "enterprise",
   "aud": "https://api.box.com/oauth2/token",
   "jti": str(uuid.uuid4()),
-  "exp": now + 45                        # 有効期限は短く
+  "exp": now + 45
 }
 headers = {"kid": KID, "typ": "JWT"}
 
@@ -94,7 +94,6 @@ with request.urlopen(req) as resp:
 if not token:
     raise SystemExit("Failed to obtain Box access token via JWT")
 
-# GitHub 環境変数へ書き出し
 with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
     f.write(f"BOX_TOKEN={token}\n")
 PY
@@ -111,7 +110,6 @@ PY
           FILEPATH="$1"
           BASENAME="$(basename "$FILEPATH")"
 
-          # フォルダ内から同名ファイルのIDを取得
           ITEMS_JSON="$(curl -sS -H "Authorization: Bearer ${BOX_TOKEN}" \
             "https://api.box.com/2.0/folders/${BOX_FOLDER_ID}/items?fields=id,name&limit=1000")"
           FILE_ID="$(echo "$ITEMS_JSON" | jq -r --arg NAME "$BASENAME" '.entries[] | select(.name == $NAME) | .id' | head -n1 || true)"
