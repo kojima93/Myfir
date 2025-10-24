@@ -3,12 +3,14 @@ name: backtest-and-report
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
+    # Developer Token は使わない。フォルダIDだけ共通envに残す
     env:
-      BOX_TOKEN: ${{ secrets.BOX_DEVELOPER_TOKEN }}   # ← あなたが登録した名前に合わせる
       BOX_FOLDER_ID: ${{ secrets.BOX_FOLDER_ID }}
 
     steps:
@@ -25,12 +27,39 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt || true
           pip install yfinance matplotlib pandas scikit-learn
+          sudo apt-get update && sudo apt-get install -y jq
 
       - name: Run backtest
         run: python main.py
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      # ★ ここで毎回アクセストークンを新規発行（CCG）
+      - name: Get Box access token (Client Credentials Grant)
+        id: box_token
+        env:
+          BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
+          BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
+          BOX_SUBJECT_TYPE: ${{ secrets.BOX_SUBJECT_TYPE }}  # 個人アカウントは "user"
+          BOX_SUBJECT_ID: ${{ secrets.BOX_SUBJECT_ID }}      # あなたのBoxユーザーID（数値）
+        run: |
+          set -e
+          RESP=$(curl -sS -X POST https://api.box.com/oauth2/token \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=${BOX_CLIENT_ID}" \
+            --data-urlencode "client_secret=${BOX_CLIENT_SECRET}" \
+            --data-urlencode "box_subject_type=${BOX_SUBJECT_TYPE}" \
+            --data-urlencode "box_subject_id=${BOX_SUBJECT_ID}")
+          echo "$RESP"
+          TOKEN=$(python - << 'PY'
+import sys, json
+print(json.loads(sys.stdin.read()).get("access_token",""))
+PY
+          <<< "$RESP")
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to obtain Box access token"; exit 1
+          fi
+          # 以降のステップが参照できるようにBOX_TOKENを環境変数として公開
+          echo "BOX_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
       # 同名があれば上書き／なければ新規アップロード
       - name: Define upload helper
@@ -42,7 +71,7 @@ jobs:
           FILEPATH="$1"
           BASENAME="$(basename "$FILEPATH")"
 
-          # フォルダ内のファイル一覧を取得して同名のIDを探す
+          # フォルダ内のファイル一覧から同名ファイルのIDを取得
           ITEMS_JSON="$(curl -sS -H "Authorization: Bearer ${BOX_TOKEN}" \
             "https://api.box.com/2.0/folders/${BOX_FOLDER_ID}/items?fields=id,name&limit=1000")"
           FILE_ID="$(echo "$ITEMS_JSON" | jq -r --arg NAME "$BASENAME" '.entries[] | select(.name == $NAME) | .id' | head -n1 || true)"
