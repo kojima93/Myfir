@@ -1,5 +1,5 @@
 name: Upload reports to Box (Client Credentials)
- 
+
 on:
   push:
     branches: [ "main" ]
@@ -33,43 +33,42 @@ jobs:
         env:
           BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
           BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
-          BOX_SUBJECT_TYPE: ${{ secrets.BOX_SUBJECT_TYPE }}   # 例: "user"
-          BOX_SUBJECT_ID: ${{ secrets.BOX_SUBJECT_ID }}       # 自分のBoxユーザーID
+          BOX_SUBJECT_TYPE: ${{ secrets.BOX_SUBJECT_TYPE }}   # "user"
+          BOX_SUBJECT_ID: ${{ secrets.BOX_SUBJECT_ID }}       # あなたのBoxユーザーID
         run: |
           set -e
-          cat > get_token.py <<'PY'
-import os, sys, json, subprocess
 
-CLIENT_ID = os.environ["BOX_CLIENT_ID"]
-CLIENT_SECRET = os.environ["BOX_CLIENT_SECRET"]
-SUBJECT_TYPE = os.environ["BOX_SUBJECT_TYPE"]
-SUBJECT_ID = os.environ["BOX_SUBJECT_ID"]
+          # Pythonファイルを安全に生成（heredoc不使用）
+          printf "%s\n" \
+"import os, sys, json, subprocess" \
+"" \
+"CLIENT_ID = os.environ['BOX_CLIENT_ID']" \
+"CLIENT_SECRET = os.environ['BOX_CLIENT_SECRET']" \
+"SUBJECT_TYPE = os.environ['BOX_SUBJECT_TYPE']" \
+"SUBJECT_ID = os.environ['BOX_SUBJECT_ID']" \
+"" \
+"cmd = [" \
+"  'curl','-sS','-X','POST','https://api.box.com/oauth2/token'," \
+"  '-H','Content-Type: application/x-www-form-urlencoded'," \
+"  '--data-urlencode','grant_type=client_credentials'," \
+"  '--data-urlencode',f'client_id={CLIENT_ID}'," \
+"  '--data-urlencode',f'client_secret={CLIENT_SECRET}'," \
+"  '--data-urlencode',f'box_subject_type={SUBJECT_TYPE}'," \
+"  '--data-urlencode',f'box_subject_id={SUBJECT_ID}'," \
+"]" \
+"" \
+"resp = subprocess.check_output(cmd)" \
+"data = json.loads(resp.decode())" \
+"token = data.get('access_token')" \
+"if not token:" \
+"    print('Failed to obtain Box access token', file=sys.stderr)" \
+"    print(data)" \
+"    sys.exit(1)" \
+"" \
+"with open(os.environ['GITHUB_ENV'], 'a') as f:" \
+"    f.write(f'BOX_TOKEN={token}\\n')" \
+> get_token.py
 
-# curlでリクエストを実行
-cmd = [
-  "curl", "-sS", "-X", "POST", "https://api.box.com/oauth2/token",
-  "-H", "Content-Type: application/x-www-form-urlencoded",
-  "--data-urlencode", "grant_type=client_credentials",
-  "--data-urlencode", f"client_id={CLIENT_ID}",
-  "--data-urlencode", f"client_secret={CLIENT_SECRET}",
-  "--data-urlencode", f"box_subject_type={SUBJECT_TYPE}",
-  "--data-urlencode", f"box_subject_id={SUBJECT_ID}"
-]
-
-resp = subprocess.check_output(cmd)
-data = json.loads(resp.decode())
-token = data.get("access_token")
-
-if not token:
-    print("Failed to obtain Box access token", file=sys.stderr)
-    print(data)
-    sys.exit(1)
-
-with open(os.environ["GITHUB_ENV"], "a") as f:
-    f.write(f"BOX_TOKEN={token}\n")
-
-print("✅ Box access token retrieved successfully.")
-PY
           python get_token.py
 
       # ===============================
