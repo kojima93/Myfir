@@ -3,9 +3,4 @@ pandas
 matplotlib
 scikit-learn
 yfinance
-matplotlib
-numpy
-pandas
-scikit-learn
-yfinance
-japanize-matplotlib
+
